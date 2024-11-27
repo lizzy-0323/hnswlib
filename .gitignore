@@ -11,3 +11,7 @@ var/
 .vs/
 **.DS_Store
 *.pyc
+compile_commands.json
+/data
+*.bin
+*.gz
