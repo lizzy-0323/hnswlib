@@ -1,15 +1,30 @@
-import os
-from data_loader import fvecs_read, ivecs_read
+from data_loader import read_ivecs, read_fvecs
 from utils import calculate_recall
 import time
 import numpy as np
 import hnswlib
 
-EF_CONSTRUCTION = 40
+EF = 20
 M = 16
-K = 1
+K = 10
 CLIENT_NUM = 4
-THREAD_NUM = 4
+THREAD_NUM = 16
+
+
+class Timer:
+    """
+    Timer class to caculate time
+    """
+
+    def __init__(self):
+        self.start = time.time()
+
+    def tick(self):
+        self.start = time.time()
+
+    def tuck(self, message: str = ""):
+        # caculate time in seconds
+        print(f"{message} time: {time.time() - self.start:.2f}s")
 
 
 class HNSW:
@@ -21,20 +36,22 @@ class HNSW:
         thread_num: int,
         M: int,
         index: str,
-        save_index: bool = False,
+        index_type: str = "hnsw",
     ):
-        # init index
-        self.index = hnswlib.Index(space="l2", dim=dim)
-        # if os.path.exists(index):
-        #     self.load_index(index)
-        # else:
-        self.index.init_index(
-            max_elements=max_elements, ef_construction=ef_construction, M=M
-        )
-        self.index.set_ef(ef_construction)
-        self.index.set_num_threads(thread_num)
-        if save_index:
-            self.save_index(index)
+        if index_type == "hnsw":
+            # init index
+            self.index = hnswlib.Index(space="l2", dim=dim)
+            # if os.path.exists(index):
+            #     self.load_index(index)
+            # else:
+            self.index.init_index(
+                max_elements=max_elements, ef_construction=ef_construction, M=M
+            )
+            self.index.set_ef(EF)
+            self.index.set_num_threads(thread_num)
+        else:
+            self.index = hnswlib.BFIndex(space="l2", dim=dim)
+            self.index.init_index(max_elements=max_elements)
 
     def add_items(self, data: np.ndarray):
         self.index.add_items(data)
@@ -49,18 +66,6 @@ class HNSW:
         self.index.load_index(path)
 
 
-class Timer:
-    def __init__(self):
-        self.start = time.time()
-
-    def tick(self):
-        self.start = time.time()
-
-    def tuck(self):
-        # caculate time in seconds
-        print(f"Time: {time.time() - self.start:.2f}s")
-
-
 def partition_data(data: np.ndarray, num_partitions: int) -> list:
     num, dim = data.shape
     partition_size = num // num_partitions
@@ -72,64 +77,67 @@ def partition_data(data: np.ndarray, num_partitions: int) -> list:
     return partitions
 
 
-def merge_top_k(*result_lst, top_k: int) -> tuple:
+def merge_top_k(result_lst: list, top_k: int) -> tuple:
     all_labels = np.concatenate([result[0] for result in result_lst], axis=1)
     all_distances = np.concatenate([result[1] for result in result_lst], axis=1)
     # Get the indicesof the sorted distances
-    sort_indices = np.argsort(all_distances, axis=1)
-    top_k_labels = all_labels[
-        np.arange(all_labels.shape[0])[:, None], sort_indices[:, :top_k]
-    ]
-    top_k_distances = all_distances[
-        np.arange(all_distances.shape[0])[:, None], sort_indices[:, :top_k]
-    ]
-
+    sort_indices = np.argsort(all_distances, axis=1)[:, :top_k]
+    top_k_labels = np.take_along_axis(all_labels, sort_indices, axis=1)
+    top_k_distances = np.take_along_axis(all_distances, sort_indices, axis=1)
     return top_k_labels, top_k_distances
 
 
 def load_data(file_name: str, file_type: str = "fvecs") -> np.ndarray:
     if file_type == "fvecs":
-        return fvecs_read(file_name)
+        return read_fvecs(file_name)
     if file_type == "ivecs":
-        return ivecs_read(file_name)
+        return read_ivecs(file_name)
     raise ValueError("Invalid file type")
 
 
 def run():
-    base = load_data("data/siftsmall/siftsmall_base.fvecs")
-    query = load_data("data/siftsmall/siftsmall_query.fvecs")
-    ground_truth = load_data("data/siftsmall/siftsmall_groundtruth.ivecs", "ivecs")
+    # base = load_data("data/siftsmall/siftsmall_base.fvecs")
+    # query = load_data("data/siftsmall/siftsmall_query.fvecs")
+    # ground_truth = load_data("data/siftsmall/siftsmall_groundtruth.ivecs", "ivecs")
 
-    # base = load_data("data/sift/sift_base.fvecs")
-    # query = load_data("data/sift/sift_query.fvecs")
-    # ground_truth = load_data("data/sift/sift_groundtruth.ivecs", "ivecs")
+    base = load_data("data/sift/sift_base.fvecs")
+    query = load_data("data/sift/sift_query.fvecs")
+    ground_truth = load_data("data/sift/sift_groundtruth.ivecs", "ivecs")
     partitions = partition_data(base, CLIENT_NUM)
+    timer = Timer()
     print("Num partitions:", len(partitions))
+    print(partitions[0].shape)
+    # init hnsw
+    timer.tick()
     hnsw_lst = [
         HNSW(
             dim=partition.shape[1],
             max_elements=partition.shape[0],
-            ef_construction=EF_CONSTRUCTION,
+            ef_construction=200,
             thread_num=THREAD_NUM,
             M=M,
             index="index" + str(i) + ".bin",
-            save_index=True,
+            index_type="bf",
         )
         for i, partition in enumerate(partitions)
     ]
     for hnsw, partition in zip(hnsw_lst, partitions):
         hnsw.add_items(partition)
-    result_lst = [hnsw.query(query, 20) for hnsw in hnsw_lst]
-    # merge top k
-    labels, distances = merge_top_k(*result_lst, top_k=K)
-    recall = calculate_recall(ground_truth, labels, top_k=K)
-    print(f"Recall: {recall}")
+    timer.tuck("Index build")
 
-    timer = Timer()
     # query
     timer.tick()
-    # result = [labels, distances]
-    timer.tuck()
+    result_lst = [hnsw.query(query, 100) for hnsw in hnsw_lst]
+    timer.tuck("Query")
+
+    # merge top k
+    timer.tick()
+    labels, distances = merge_top_k(result_lst, K)
+    timer.tuck("Aggregate")
+
+    # calculate recall
+    recall = calculate_recall(ground_truth, labels, K)
+    print(f"Recall: {recall}")
 
 
 if __name__ == "__main__":

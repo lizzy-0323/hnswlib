@@ -1,11 +1,11 @@
 import numpy as np
 
 
-def ivecs_read(fname):
+def read_ivecs(fname):
     a = np.fromfile(fname, dtype="int32")
     d = a[0]
     return a.reshape(-1, d + 1)[:, 1:].copy()
 
 
-def fvecs_read(fname):
-    return ivecs_read(fname).view("float32")
+def read_fvecs(fname):
+    return read_ivecs(fname).view("float32")
