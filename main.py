@@ -37,7 +37,9 @@ class HNSW:
         M: int,
         index: str,
         index_type: str = "hnsw",
+        nth:int = 0,
     ):
+        self.offset = nth * max_elements
         if index_type == "hnsw":
             # init index
             self.index = hnswlib.Index(space="l2", dim=dim)
@@ -117,7 +119,8 @@ def run():
             thread_num=THREAD_NUM,
             M=M,
             index="index" + str(i) + ".bin",
-            index_type="bf",
+            # index_type="bf",
+            nth=i,
         )
         for i, partition in enumerate(partitions)
     ]
@@ -127,7 +130,12 @@ def run():
 
     # query
     timer.tick()
-    result_lst = [hnsw.query(query, 100) for hnsw in hnsw_lst]
+    # result_lst = [hnsw.query(query, 100) for hnsw in hnsw_lst]
+    result_lst = []
+    for hnsw in hnsw_lst:
+        relative_labels, distances = hnsw.query(query, 100)
+        labels = relative_labels + hnsw.offset
+        result_lst.append((labels, distances))
     timer.tuck("Query")
 
     # merge top k
