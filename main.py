@@ -1,82 +1,14 @@
-from data_loader import read_ivecs, read_fvecs
-from utils import calculate_recall
-import time
+from data_loader import get_dataset
+from utils import calculate_recall, Timer
+from data_processor import partition_data
+from hnsw import HNSW
 import numpy as np
-import hnswlib
 
 EF = 20
 M = 16
 K = 10
-CLIENT_NUM = 4
+PARTITION_NUM = 10
 THREAD_NUM = 16
-
-
-class Timer:
-    """
-    Timer class to caculate time
-    """
-
-    def __init__(self):
-        self.start = time.time()
-
-    def tick(self):
-        self.start = time.time()
-
-    def tuck(self, message: str = ""):
-        # caculate time in seconds
-        print(f"{message} time: {time.time() - self.start:.2f}s")
-
-
-class HNSW:
-    def __init__(
-        self,
-        dim: int,
-        max_elements: int,
-        ef_construction: int,
-        thread_num: int,
-        M: int,
-        index: str,
-        index_type: str = "hnsw",
-        nth:int = 0,
-    ):
-        self.offset = nth * max_elements
-        if index_type == "hnsw":
-            # init index
-            self.index = hnswlib.Index(space="l2", dim=dim)
-            # if os.path.exists(index):
-            #     self.load_index(index)
-            # else:
-            self.index.init_index(
-                max_elements=max_elements, ef_construction=ef_construction, M=M
-            )
-            self.index.set_ef(EF)
-            self.index.set_num_threads(thread_num)
-        else:
-            self.index = hnswlib.BFIndex(space="l2", dim=dim)
-            self.index.init_index(max_elements=max_elements)
-
-    def add_items(self, data: np.ndarray):
-        self.index.add_items(data)
-
-    def query(self, query: np.ndarray, k: int):
-        return self.index.knn_query(query, k)
-
-    def save_index(self, path: str):
-        self.index.save_index(path)
-
-    def load_index(self, path: str):
-        self.index.load_index(path)
-
-
-def partition_data(data: np.ndarray, num_partitions: int) -> list:
-    num, dim = data.shape
-    partition_size = num // num_partitions
-    partitions = []
-    for i in range(num_partitions):
-        start = i * partition_size
-        end = (i + 1) * partition_size
-        partitions.append(data[start:end])
-    return partitions
 
 
 def merge_top_k(result_lst: list, top_k: int) -> tuple:
@@ -89,26 +21,30 @@ def merge_top_k(result_lst: list, top_k: int) -> tuple:
     return top_k_labels, top_k_distances
 
 
-def load_data(file_name: str, file_type: str = "fvecs") -> np.ndarray:
-    if file_type == "fvecs":
-        return read_fvecs(file_name)
-    if file_type == "ivecs":
-        return read_ivecs(file_name)
-    raise ValueError("Invalid file type")
+def run_similar_partition():
+    """
+    Run the HNSW algorithm with similar partitioning strategy
+    """
+    # TODO: Implement the similar partitioning strategy
+    # BUILD INDEX
+    # 1. using k-means to partition the data
+    # 2. sample data from each partition
+    # 3. build a meta index with sampled data
+    # 4. using graph partitioning to partition the data, assign each subgraph to a query node
+    # 5. each query node build a index with the assigned partitions
+
+    # QUERY
+    # 1. find top-k partitions
+    # 2. route to corresponding query node
 
 
-def run():
-    # base = load_data("data/siftsmall/siftsmall_base.fvecs")
-    # query = load_data("data/siftsmall/siftsmall_query.fvecs")
-    # ground_truth = load_data("data/siftsmall/siftsmall_groundtruth.ivecs", "ivecs")
-
-    base = load_data("data/sift/sift_base.fvecs")
-    query = load_data("data/sift/sift_query.fvecs")
-    ground_truth = load_data("data/sift/sift_groundtruth.ivecs", "ivecs")
-    partitions = partition_data(base, CLIENT_NUM)
+def run_naive():
+    """
+    Run the HNSW algorithm with naive strategy
+    """
+    base, query, ground_truth = get_dataset("siftsmall")
+    partitions = partition_data(base, PARTITION_NUM)
     timer = Timer()
-    print("Num partitions:", len(partitions))
-    print(partitions[0].shape)
     # init hnsw
     timer.tick()
     hnsw_lst = [
@@ -149,4 +85,5 @@ def run():
 
 
 if __name__ == "__main__":
-    run()
+    # run_similar_partition()
+    run_naive()

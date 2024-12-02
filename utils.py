@@ -1,4 +1,21 @@
 import numpy as np
+import time
+
+
+class Timer:
+    """
+    Timer class to caculate time
+    """
+
+    def __init__(self):
+        self.start = time.time()
+
+    def tick(self):
+        self.start = time.time()
+
+    def tuck(self, message: str = ""):
+        # caculate time in seconds
+        print(f"{message} time: {time.time() - self.start:.2f}s")
 
 
 def calculate_recall(ground_truth: np.ndarray, labels: np.ndarray, top_k: int) -> float:
