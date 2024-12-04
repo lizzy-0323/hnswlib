@@ -84,6 +84,18 @@ def run_naive():
     print(f"Recall: {recall}")
 
 
+
+def HNSW_bucket_index(partitions: list):
+    '''
+    Build HNSW index for each bucket
+    returns:
+    HNSW
+    index-node mapping, takes dictionary form
+    '''
+    index_node = {}
+    pass
+
+
 if __name__ == "__main__":
     # run_similar_partition()
     run_naive()

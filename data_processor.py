@@ -1,7 +1,19 @@
+from collections import defaultdict
 from typing import Literal
 import numpy as np
 from sklearn.cluster import KMeans
 from scipy.sparse.csgraph import laplacian
+from utils import Timer
+from node import Node, Cluster
+
+
+
+EF = 200
+M = 32
+K = 10
+PARTITION_NUM = 10
+THREAD_NUM = 16
+
 
 
 def partition_data(data: np.ndarray, num_partitions: int) -> list:
@@ -35,15 +47,22 @@ def kmeans_partition(
     Partition the data using kmeans clustering
     :return: buckets and corresponding centroid: [(bucket1, centroid1), (bucket2, centroid2), ...]
     """
+    # TODO: Speed up by using GPU
     # TODO: Sklearn only supports l2 distance, need to implement other distance metrics
+    timer = Timer()
+    timer.tick()
     kmeans = KMeans(n_clusters=num_clusters, n_init="auto")
     kmeans.fit(data)
+    timer.tuck("Kmeans clustering")
+    timer.tick()
     labels = kmeans.labels_  # num_samples * 1, min: 0, max: num_clusters - 1
     centroids = kmeans.cluster_centers_
+    print("After partitioning, max number in centroids is:", np.max(centroids))
     buckets = []
     for i in range(num_clusters):
         bucket = data[labels == i]
         buckets.append((bucket, centroids[i]))
+    timer.tuck("Create buckets")
     return buckets
 
 
@@ -87,21 +106,96 @@ def partition_buckets_spectral(
         partitions.append(partition)
     return partitions
 
-def partition_buckets_kmeans( buckets: list, n_partitions: int):
+
+def partition_buckets_kmeans(buckets: list, n_partitions: int):
     """
     Partition buckets using kmeans clustering
     """
     centroid_array = np.array([bucket[1] for bucket in buckets])
     kmeans = KMeans(n_clusters=n_partitions, n_init="auto")
     labels = kmeans.fit_predict(centroid_array)
-    partitions = []
-    for i in range(n_partitions):
-        partition = []
-        for j in range(len(labels)):
-            if labels[j] == i:
-                partition.append(buckets[j])
-        partitions.append(partition)
+    partitions_dict = defaultdict(list)
+    for label, bucket in zip(labels, buckets):
+        partitions_dict[label].append(bucket)
+    partitions = [partitions_dict[i] for i in range(n_partitions)]
     return partitions
+
+
+def build_nodes(
+    data: np.ndarray,
+    num_buckets: int = 2000,
+    num_nodes: int = 100,
+    partition_method: Literal["kmeans", "spectral"] = "kmeans",
+):
+    """
+    returns:
+    nodes: list of nodes
+    bucket_dict: dict of bucket centroid index to node
+    bucket_centroids: centroids of buckets
+    """
+    buckets = kmeans_partition(data, num_buckets)
+
+    timer = Timer()
+    timer.tick()
+    if partition_method == "kmeans":
+        partitions = partition_buckets_kmeans(buckets, num_nodes)
+    else:
+        partitions = partition_buckets_spectral(buckets, num_nodes)
+    timer.tuck("Partitioning")
+    print(len(partitions))
+    print(len(partitions[0]))
+    offset = 0
+    nodes = []
+    timer.tick()
+    bucket_dict = {}
+    for i, partition in enumerate(partitions):
+        num_buckets_in_partition = len(partition)
+        node = Node(
+            buckets=partition,
+            ef_construction=EF,
+            thread_num=THREAD_NUM,
+            M=M,
+            offset=offset,
+        )
+        nodes.append(node)
+        for j in range(num_buckets_in_partition):
+            bucket_dict[offset + j] = node
+        offset += num_buckets_in_partition
+    timer.tuck("Build nodes")
+    array_centroids = np.array([np.array(bucket[1]) for bucket in buckets])
+    return nodes, bucket_dict, array_centroids
+
+def build_cluster(
+    data: np.ndarray,
+    num_buckets: int = 2000,
+    num_nodes: int = 100,
+    partition_method: Literal["kmeans", "spectral"] = "kmeans",
+    ef_construction: int = EF,
+    thread_num: int = THREAD_NUM,
+    M: int = M,
+
+):
+    """
+    returns a cluster
+    """
+    nodes, bucket_dict, centroids = build_nodes(data, num_buckets, num_nodes, partition_method)
+    cluster = Cluster(
+            nodes, 
+            bucket_dict, 
+            centroids,
+            ef_construction=ef_construction,
+            thread_num=thread_num,
+            M=M
+            )
+    return cluster
+
+
+def search_node(cluster: Cluster, query, k):
+    """
+    Search the nodes
+    """
+    node_dict = cluster.get_nodes_dict(query, k)
+    print(node_dict)
 
 
 def validate_partitioning(partitions: list):
