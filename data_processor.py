@@ -3,16 +3,30 @@ from typing import Literal
 import numpy as np
 from sklearn.cluster import KMeans
 from scipy.sparse.csgraph import laplacian
+from sklearn.utils.fixes import sklearn
+from data_loader import get_dataset
 from utils import Timer
 from node import Node, Cluster
+import kmeans_pytorch
+import torch
 
 
 
-EF = 200
+EF = 20
 M = 32
 K = 10
 PARTITION_NUM = 10
 THREAD_NUM = 16
+
+DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
+
+VERBOSE = 0
+
+
+space_hnsw_to_torch = {
+    "l2": "euclidean",
+    "cosine": "cosine",
+}
 
 
 
@@ -41,22 +55,31 @@ def sample_data(data: np.ndarray, num_samples: int, method="random") -> np.ndarr
 
 
 def kmeans_partition(
-    data: np.ndarray, num_clusters: int, space: Literal["l2", "cosine", "ip"] = "l2"
+        data: np.ndarray, num_clusters: int, space: Literal["l2", "cosine", "ip"] = "l2", method: Literal["sklearn", "pytorch"] = "sklearn"
 ):
     """
     Partition the data using kmeans clustering
     :return: buckets and corresponding centroid: [(bucket1, centroid1), (bucket2, centroid2), ...]
     """
-    # TODO: Speed up by using GPU
     # TODO: Sklearn only supports l2 distance, need to implement other distance metrics
     timer = Timer()
     timer.tick()
-    kmeans = KMeans(n_clusters=num_clusters, n_init="auto")
-    kmeans.fit(data)
+    if method == "sklearn":
+        if space in ["ip", "cosine"]:
+            raise NotImplementedError("Sklearn only supports l2 distance")
+        kmeans = KMeans(n_clusters=num_clusters, n_init="auto", verbose=VERBOSE)
+        kmeans.fit(data)
+        labels = kmeans.labels_  # num_samples * 1, min: 0, max: num_clusters - 1
+        centroids = kmeans.cluster_centers_
+    else:
+        if space == "ip":
+            raise NotImplementedError("Inner product distance is not implemented in pytorch")
+        torch_data = torch.from_numpy(data).float().to(DEVICE)
+        labels, centroids = kmeans_pytorch.kmeans(X=torch_data, num_clusters=num_clusters, distance=space_hnsw_to_torch[space], device=torch.device(DEVICE))
+        labels = labels.cpu().numpy()
+        centroids = centroids.cpu().numpy()
     timer.tuck("Kmeans clustering")
     timer.tick()
-    labels = kmeans.labels_  # num_samples * 1, min: 0, max: num_clusters - 1
-    centroids = kmeans.cluster_centers_
     print("After partitioning, max number in centroids is:", np.max(centroids))
     buckets = []
     for i in range(num_clusters):
@@ -107,7 +130,7 @@ def partition_buckets_spectral(
     return partitions
 
 
-def partition_buckets_kmeans(buckets: list, n_partitions: int):
+def partition_buckets_kmeans(buckets: list, n_partitions: int, method: Literal["sklearn", "pytorch"] = "sklearn"):
     """
     Partition buckets using kmeans clustering
     """
@@ -235,8 +258,13 @@ def validate_partitioning(partitions: list):
 
 
 if __name__ == "__main__":
-    data = np.random.rand(10000, 128)
-    kmeans_result = kmeans_partition(data, 1000)
+    data, _, _ = get_dataset("sift")
+    print(data.shape)
+    data = data[:100000]
+    timer = Timer()
+    timer.tick()
+    kmeans_result = kmeans_partition(data, 1000, method="sklearn")
+    timer.tuck("Sklearn Kmeans partition")
     # for bucket, centroid in kmeans_result:
     #     print(bucket.shape, centroid.shape)
     print(len(kmeans_result))

@@ -51,7 +51,11 @@ class Node:
         if with_offset:
             buckets = [bucket - self.offset for bucket in buckets]
         for i, hnsw in enumerate(self.buckets):
-            labels, distances = hnsw.query(vector, k)
+            if hnsw.index.get_current_count() <= k:
+                labels, distances = hnsw.query(vector, hnsw.index.get_current_count())
+            else:
+                labels, distances = hnsw.query(vector, k)
+            
             # TODO: apply multi vector query
             labels = labels[0]
             distances = distances[0]
@@ -102,7 +106,6 @@ class Cluster:
         """
         labels, dists = self.hnsw.query(query, top_k)
         nodes_dict = {}
-        print("Distances:", dists)
         for label in labels[0].tolist():
             node = self.bucket_dict[label]
             if node not in nodes_dict:
