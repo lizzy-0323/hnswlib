@@ -45,5 +45,3 @@ def calculate_recall_by_vector(ground_truth_vectors: np.ndarray, retrieved_sorte
 
 
 
-
-

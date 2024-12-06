@@ -12,7 +12,7 @@ import torch
 
 
 
-EF = 20
+EF = 200
 M = 32
 K = 10
 PARTITION_NUM = 10

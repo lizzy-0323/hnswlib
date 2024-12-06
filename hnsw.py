@@ -41,3 +41,37 @@ class HNSW:
 
     def load_index(self, path: str):
         self.index.load_index(path)
+
+
+
+class Dual_HNSW(HNSW):
+    def __init__(
+        self,
+        dim: int,
+        max_elements: int,
+        ef_construction: int,
+        thread_num: int,
+        M: int,
+        index: str,
+        nth: int = 0,
+    ):
+        self.offset = nth * max_elements
+
+        self.index = hnswlib.Index(space="l2", dim=dim)
+        # if os.path.exists(index):
+        #     self.load_index(index)
+        # else:
+        self.index.init_index(
+            max_elements=max_elements, ef_construction=ef_construction, M=M
+        )
+        self.index.set_ef(20)
+        self.index.set_num_threads(thread_num)
+        self.bf_index = hnswlib.BFIndex(space="l2", dim=dim)
+        self.bf_index.init_index(max_elements=max_elements)
+
+    def bf_query(self, query: np.ndarray, k: int):
+        print("bf query")
+        return self.bf_index.knn_query(query, k)
+
+
+
