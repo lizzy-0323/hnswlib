@@ -1,6 +1,5 @@
 from typing import Literal
 import time
-from joblib import dump
 from matplotlib import pyplot
 import data_processor
 import numpy as np
@@ -96,6 +95,8 @@ def distributed_search_sim(
     ground_truth_vectors = base[ground_truth_labels]
     ground_truth_distances = np.linalg.norm(ground_truth_vectors - oneQuery, axis=1)
     centroid_distances = np.linalg.norm(cenoids - oneQuery, axis=1)
+    print("Top k vectors shape: ", top_k_vectors.shape)
+    print("Ground truth shape: ", ground_truth_vectors.shape)
     recall = utils.calculate_recall_by_vector(ground_truth_vectors, top_k_vectors)
     print(
         "recall: ",
@@ -116,19 +117,17 @@ def distributed_search_sim(
         _distributed_node_indices.append(node_index)
     distributed_bucket_unique_indices = set(_distributed_bucket_indices)
     distributed_node_unique_indices = set(_distributed_node_indices)
-    # print bucket indices and node indices, sorted for better comparison
-    print("bf bucket unique indices: ", sorted(list(bf_bucket_unique_indices)))
-    print("distributed bucket unique indices: ", sorted(list(distributed_bucket_unique_indices)))
+    # print("bf bucket unique indices: ", sorted(list(bf_bucket_unique_indices)))
+    # print("distributed bucket unique indices: ", sorted(list(distributed_bucket_unique_indices)))
     bucket_recall = len(bf_bucket_unique_indices & distributed_bucket_unique_indices) / len(bf_bucket_unique_indices)
     node_recall = len(bf_node_unique_indices & distributed_node_unique_indices) / len(bf_node_unique_indices)
     print(f"bucket recall: {bucket_recall}")
     print(f"node recall: {node_recall}")
 
-    print("bf top k distances: ", bf_top_k_distances)
-    print("ground truth distances: ", ground_truth_distances)
-    print("distributed distances: ", np.sqrt(top_k_distances))
+    # print("bf top k distances: ", bf_top_k_distances)
+    # print("ground truth distances: ", ground_truth_distances)
+    # print("distributed distances: ", np.sqrt(top_k_distances))
     print("distributed centroid distances: ", centroid_distances)
-
     bf_bucket_centroids = cluster.get_bucket_centroids(np.array(list(bf_bucket_unique_indices)))
     bf_bucket_centroid_distances = np.linalg.norm(bf_bucket_centroids - oneQuery, axis=1)
     print("bf bucket centroid distances: ", bf_bucket_centroid_distances)
@@ -142,7 +141,7 @@ def distributed_search_sim(
 if __name__ == "__main__":
     num_buckets = 200
     num_nodes = 20
-    repeat_num = 5
+    repeat_num = 1
     dataset = "sift"
     base, query, ground_truth = get_dataset(dataset)
     # create_persistent_cluster(base, num_buckets, num_nodes, "kmeans", dataset)
@@ -153,7 +152,7 @@ if __name__ == "__main__":
     node_recall_y = []
     bucket_recall_y = []
 
-    for i in range(2, 23):
+    for i in range(90, 92):
         average_recall = 0
         average_bucket_recall = 0
         average_node_recall = 0

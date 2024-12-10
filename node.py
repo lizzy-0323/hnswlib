@@ -235,3 +235,8 @@ class Cluster:
         """
         return self.centroids[labels]
 
+    def get_all_buckets(self):
+        """
+        Get all buckets
+        """
+        return self.bucket_dict.values()
