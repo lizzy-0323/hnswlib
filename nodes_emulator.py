@@ -1,177 +1,148 @@
-from typing import Literal
+from typing import Literal, Union
 import time
 from matplotlib import pyplot
 import data_processor
 import numpy as np
 from hnsw import HNSW
 from data_loader import get_dataset
-from data_processor import (
-    build_cluster,
-    kmeans_partition,
-    partition_buckets_spectral,
-    partition_buckets_kmeans,
-    build_nodes,
-)
 import node
 from utils import Timer
 from node import Node
 import utils
 import pickle
+from sklearn.cluster import KMeans
 
 timer = Timer()
 
 
-def save_persistent_cluster(cluster, dataset_name):
+def create_persistent_kmeans_data(data, num_clusters, num_buckets, path):
     """
-    Create a persistent cluster
+    Create a persistent kmean object
     """
-    with open(f"./data/pickle/{dataset_name}_cluster.pkl", "wb") as f:
-        pickle.dump(cluster, f)
+    kmeans = KMeans(n_clusters=num_clusters, random_state=0).fit(data)
+    labels = kmeans.labels_
+    centroids = kmeans.cluster_centers_
+    data_dict = {
+        "base": data,
+        "labels": labels,
+        "centroids": centroids,
+    }
+    with open(path, "wb") as f:
+        pickle.dump(data_dict, f)
+    return data_dict
 
 
-def create_persistent_cluster(
-    data, num_buckets, num_nodes, partition_method, dataset_name
-):
-    """
-    Create a persistent cluster
-    """
-    cluster = build_cluster(data, num_buckets, num_nodes, partition_method)
-    save_persistent_cluster(cluster, dataset_name)
-
-
-def load_persistent_cluster(dataset_name) -> node.Cluster:
-    """
-    Load a persistent cluster
-    """
-    with open(f"./data/pickle/{dataset_name}_cluster.pkl", "rb") as f:
-        cluster = pickle.load(f)
-    return cluster
-
+def load_presistent_kmeans_data(path):
+    with open (path, "rb") as f:
+        saved_dict = pickle.load(f)
+    return saved_dict
 
 def distributed_search_sim(
         cluster: node.Cluster,
+        query: np.ndarray,
     k: int = 10,
-):
+    buckets_k: int = 10,
+    ground_truth: Union[np.ndarray, None] = None,
+    ):
     """
     For now only supports single vector query
     """
     # TODO:
     # 1. calculate qps
-    print(f"Total number of buckets in cluster: {cluster.get_total_bucket_count()}")
-    print(f"Total number of nodes in cluster: {cluster.get_nodes_count()}")
-    base, query, ground_truth = get_dataset(dataset)
+    data = cluster.data
+    print(f"Total number of buckets in cluster: {cluster.num_buckets}")
+    print(f"Total number of nodes in cluster: {cluster.num_nodes}")
     queryLen = query.shape[0]
     print(base.shape)
     random_index = np.random.randint(0, queryLen)
-    oneQuery = query[random_index][None, :]
-    node_dict: dict = cluster.get_nodes_dict(oneQuery, k)
-    cenoids = []
-    for node, bucket_list in node_dict.items():
-        cenoids.extend(node.get_centroids(bucket_list))
-    cenoids = np.array(cenoids)
-    final_res = []
-    final_dist = []
     maximum_search_time = 0
     search_times = []
+    node_dict = cluster.get_node_dict(query, buckets_k)
     print("Number of nodes for query: ", len(node_dict))
     print("Number of buckets for query: ", sum([len(bucket_list) for bucket_list in node_dict.values()]))
-    for node, bucket_list in node_dict.items():
+    query_res_labels = np.empty((0), dtype=np.int32)
+    query_res_dists = np.empty((0), dtype=np.float32)
+    for node_index, bucket_list in node_dict.items():
         node_start = time.time()
-        res, dist = node.query(oneQuery, bucket_list, k)
-        final_res.extend(res.tolist())
-        final_dist.extend(dist.tolist())
+        _node_labels, _node_dists = cluster.nodes[node_index].query_abs_labels(
+                query,
+                k,
+                bucket_list,)
+        _node_labels = _node_labels
+        _node_dists = _node_dists
+        query_res_labels = np.concatenate((query_res_labels, _node_labels))
+        query_res_dists = np.concatenate((query_res_dists, _node_dists))
         current_search_time = time.time() - node_start
         search_times.append(current_search_time)
         if current_search_time > maximum_search_time:
             maximum_search_time = current_search_time
-    final_res = np.array(final_res)
-    final_dist = np.array(final_dist)
-    sort_indices = np.argsort(final_dist, axis=0)
-    top_k_vectors = final_res[sort_indices[:k]]
-    top_k_distances = final_dist[sort_indices[:k]]
-    bf_top_k_vectors, bf_top_k_distances, node_indices, bucket_indices = cluster.bf_query(oneQuery, k)
-    # recalculate distances
-    ground_truth_labels = ground_truth[random_index][:k]
-    ground_truth_vectors = base[ground_truth_labels]
-    ground_truth_distances = np.linalg.norm(ground_truth_vectors - oneQuery, axis=1)
-    centroid_distances = np.linalg.norm(cenoids - oneQuery, axis=1)
-    print("Top k vectors shape: ", top_k_vectors.shape)
-    print("Ground truth shape: ", ground_truth_vectors.shape)
-    recall = utils.calculate_recall_by_vector(ground_truth_vectors, top_k_vectors)
+    sort_indices = np.argsort(query_res_dists, axis=0)
+    top_k_labels = query_res_labels[sort_indices[:k]]
+    top_k_distances = query_res_dists[sort_indices[:k]]
+    if ground_truth is None:
+        print("No ground truth provided, using brute force search as ground truth")
+        bf_top_k_labels, bf_top_k_distances = cluster.query(query, k, cluster.num_buckets, index_type="bf")
+        ground_truth_labels = bf_top_k_labels
+        ground_truth_distances = bf_top_k_distances
+        ground_truth_vectors = base[bf_top_k_labels]
+    else:
+        ground_truth_labels = ground_truth[random_index][:k]
+        ground_truth_vectors = base[ground_truth_labels]
+        ground_truth_distances = np.linalg.norm(ground_truth_vectors - query, axis=1)
+    print(ground_truth_labels, top_k_labels)
+    ground_truth_set = set(ground_truth_labels.tolist())
+    top_k_set = set(top_k_labels.tolist())
+    recall = len(ground_truth_set & top_k_set) / k
     print(
         "recall: ",
         recall,
     )
-    bf_recall = utils.calculate_recall_by_vector(ground_truth_vectors, bf_top_k_vectors)
-    print(
-        "bf recall: ",
-        bf_recall,
-    )
-    bf_bucket_unique_indices = set(np.unique(bucket_indices).tolist())
-    bf_node_unique_indices = set(np.unique(node_indices).tolist())
-    _distributed_bucket_indices = []
-    _distributed_node_indices = []
-    for node, bucket_list in node_dict.items():
-        _distributed_bucket_indices.extend(bucket_list)
-        node_index = cluster.nodes.index(node)
-        _distributed_node_indices.append(node_index)
-    distributed_bucket_unique_indices = set(_distributed_bucket_indices)
-    distributed_node_unique_indices = set(_distributed_node_indices)
-    # print("bf bucket unique indices: ", sorted(list(bf_bucket_unique_indices)))
-    # print("distributed bucket unique indices: ", sorted(list(distributed_bucket_unique_indices)))
-    bucket_recall = len(bf_bucket_unique_indices & distributed_bucket_unique_indices) / len(bf_bucket_unique_indices)
-    node_recall = len(bf_node_unique_indices & distributed_node_unique_indices) / len(bf_node_unique_indices)
-    print(f"bucket recall: {bucket_recall}")
-    print(f"node recall: {node_recall}")
-
-    # print("bf top k distances: ", bf_top_k_distances)
-    # print("ground truth distances: ", ground_truth_distances)
-    # print("distributed distances: ", np.sqrt(top_k_distances))
-    print("distributed centroid distances: ", centroid_distances)
-    bf_bucket_centroids = cluster.get_bucket_centroids(np.array(list(bf_bucket_unique_indices)))
-    bf_bucket_centroid_distances = np.linalg.norm(bf_bucket_centroids - oneQuery, axis=1)
-    print("bf bucket centroid distances: ", bf_bucket_centroid_distances)
-
-
     print("average search time: ", np.mean(search_times))
     print("maximum search time: ", maximum_search_time)
-    return recall, bucket_recall, node_recall
 
 
-if __name__ == "__main__":
-    num_buckets = 200
-    num_nodes = 20
-    repeat_num = 1
-    dataset = "sift"
-    base, query, ground_truth = get_dataset(dataset)
-    # create_persistent_cluster(base, num_buckets, num_nodes, "kmeans", dataset)
-    cluster = load_persistent_cluster(dataset)
-    cluster.show_nodes_info()
-    k_x = []
-    recall_y = []
-    node_recall_y = []
-    bucket_recall_y = []
-    for i in range(90, 92):
-        average_recall = 0
-        average_bucket_recall = 0
-        average_node_recall = 0
-        for j in range(repeat_num):
-            single_epoch_recall, single_epoch_bucket_recall, single_epoch_node_recall = distributed_search_sim(cluster, k=i)
-            average_recall += single_epoch_recall / repeat_num
-            average_bucket_recall += single_epoch_bucket_recall / repeat_num
-            average_node_recall += single_epoch_node_recall / repeat_num
-        k_x.append(i)
-        recall_y.append(average_recall)
-        node_recall_y.append(average_node_recall)
-        bucket_recall_y.append(average_bucket_recall)
-    print(k_x)
-    print(recall_y)
-    pyplot.xlabel("k")
-    pyplot.ylabel("recall")
-    pyplot.plot(k_x, recall_y)
-    pyplot.plot(k_x, node_recall_y)
-    pyplot.plot(k_x, bucket_recall_y)
-    pyplot.legend(["recall", "node recall", "bucket recall"])
-    pyplot.savefig(f"./data/image/{dataset}_recall_vs_k.png")
+num_buckets = 200
+num_nodes = 20
+repeat_num = 1
+dataset = "sift"
+base, query, ground_truth = get_dataset(dataset)
+data_dict = create_persistent_kmeans_data(base, num_clusters=num_buckets, num_buckets=num_buckets, path=f"./data/pickle/{dataset}_kmeans_data.pkl")
+cluster = node.Cluster.FromPrePartitionedBuckets(
+        data=base,
+        bucket_labels=data_dict["labels"],
+        bucket_centroids=data_dict["centroids"],
+        num_nodes=num_nodes,
+        )
+k_x = []
+recall_y = []
+node_recall_y = []
+bucket_recall_y = []
+
+for i in range(90, 92):
+    average_recall = 0
+    average_bucket_recall = 0
+    average_node_recall = 0
+    rand_query_index = np.random.randint(0, query.shape[0])
+    rand_query = query[rand_query_index]
+    for j in range(repeat_num):
+        print(f"Round {j} under k={i}")
+        distributed_search_sim(cluster, k=i, buckets_k=10, query=rand_query, ground_truth=ground_truth)
+    k_x.append(i)
+    recall_y.append(average_recall)
+    node_recall_y.append(average_node_recall)
+    bucket_recall_y.append(average_bucket_recall)
+
+print(k_x)
+print(recall_y)
+pyplot.xlabel("k")
+pyplot.ylabel("recall")
+pyplot.plot(k_x, recall_y)
+pyplot.plot(k_x, node_recall_y)
+pyplot.plot(k_x, bucket_recall_y)
+pyplot.legend(["recall", "node recall", "bucket recall"])
+pyplot.savefig(f"./data/image/{dataset}_recall_vs_k.png")
 
 
+rand_query_index = np.random.randint(0, query.shape[0])
+rand_query = query[rand_query_index]
+distributed_search_sim(cluster, k=90, buckets_k=90, query=rand_query, ground_truth=ground_truth)

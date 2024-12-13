@@ -129,92 +129,6 @@ def partition_buckets_spectral(
     return partitions
 
 
-def partition_buckets_kmeans(buckets: list, n_partitions: int, method: Literal["sklearn", "pytorch"] = "sklearn"):
-    """
-    Partition buckets using kmeans clustering
-    :param buckets: [(bucket1, centroid1), (bucket2, centroid2), ...]
-    :return: partitions: [[(bucket1, centroid1), (bucket2, centroid2), ...], ...]
-    """
-    centroid_array = np.array([bucket[1] for bucket in buckets])
-    kmeans = KMeans(n_clusters=n_partitions, n_init="auto")
-    labels = kmeans.fit_predict(centroid_array)
-    partitions_dict = defaultdict(list)
-    for label, bucket in zip(labels, buckets):
-        partitions_dict[label].append(bucket)
-    partitions = [partitions_dict[i] for i in range(n_partitions)]
-    return partitions
-
-
-def build_nodes(
-    data: np.ndarray,
-    num_buckets: int = 2000,
-    num_nodes: int = 100,
-    partition_method: Literal["kmeans", "spectral"] = "kmeans",
-):
-    """
-    returns:
-    nodes: list of nodes
-    bucket_dict: dict of bucket centroid index to node
-    bucket_centroids: centroids of buckets
-    """
-    buckets = kmeans_partition(data, num_buckets)
-
-    timer = Timer()
-    timer.tick()
-    if partition_method == "kmeans":
-        partitions = partition_buckets_kmeans(buckets, num_nodes)
-    else:
-        partitions = partition_buckets_spectral(buckets, num_nodes)
-    timer.tuck("Partitioning")
-    print(len(partitions))
-    print(len(partitions[0]))
-    offset = 0
-    nodes = []
-    timer.tick()
-    bucket_dict = {}
-    for i, partition in enumerate(partitions):
-        num_buckets_in_partition = len(partition)
-        node = Node(
-            buckets=partition,
-            ef_construction=EF,
-            thread_num=THREAD_NUM,
-            M=M,
-            offset=offset,
-        )
-        nodes.append(node)
-        for j in range(num_buckets_in_partition):
-            bucket_dict[offset + j] = node
-        offset += num_buckets_in_partition
-    timer.tuck("Build nodes")
-    array_centroids = np.array([np.array(bucket[1]) for bucket in buckets])
-    return nodes, bucket_dict, array_centroids
-
-def build_cluster(
-    data: np.ndarray,
-    num_buckets: int = 2000,
-    num_nodes: int = 100,
-    partition_method: Literal["kmeans", "spectral"] = "kmeans",
-    ef_construction: int = EF,
-    thread_num: int = THREAD_NUM,
-    M: int = M,
-
-):
-    """
-    returns a cluster
-    """
-    nodes, bucket_dict, centroids = build_nodes(data, num_buckets, num_nodes, partition_method)
-    cluster = Cluster(
-            nodes, 
-            bucket_dict, 
-            centroids,
-            ef_construction=ef_construction,
-            thread_num=thread_num,
-            M=M,
-            raw_data=data,
-            )
-    return cluster
-
-
 def search_node(cluster: Cluster, query, k):
     """
     Search the nodes
@@ -259,18 +173,18 @@ def validate_partitioning(partitions: list):
     print("Random centroid max distance: ", random_centroid_max_distance)
 
 
-if __name__ == "__main__":
-    data, _, _ = get_dataset("sift")
-    print(data.shape)
-    data = data[:100000]
-    timer = Timer()
-    timer.tick()
-    kmeans_result = kmeans_partition(data, 1000, method="sklearn")
-    timer.tuck("Sklearn Kmeans partition")
-    # for bucket, centroid in kmeans_result:
-    #     print(bucket.shape, centroid.shape)
-    print(len(kmeans_result))
-    partitions = partition_buckets_kmeans(kmeans_result, 100)
-    for part in partitions:
-        print(len(part), end=" ")
-    validate_partitioning(partitions)
+# if __name__ == "__main__":
+#     data, _, _ = get_dataset("sift")
+#     print(data.shape)
+#     data = data[:100000]
+#     timer = Timer()
+#     timer.tick()
+#     kmeans_result = kmeans_partition(data, 1000, method="sklearn")
+#     timer.tuck("Sklearn Kmeans partition")
+#     # for bucket, centroid in kmeans_result:
+#     #     print(bucket.shape, centroid.shape)
+#     print(len(kmeans_result))
+#     partitions = partition_buckets_kmeans(kmeans_result, 100)
+#     for part in partitions:
+#         print(len(part), end=" ")
+#     validate_partitioning(partitions)

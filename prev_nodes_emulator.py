@@ -1,3 +1,4 @@
+
 from typing import Dict, List, Literal, Union
 
 from tqdm import tqdm
@@ -13,7 +14,262 @@ PARTITION_NUM = 10
 THREAD_NUM = 16
 
 
-class Bucket:
+
+
+
+class Node:
+    """
+    Each node contains:
+    buckets: list of hnsw
+    data_list: list of data, corresponds to the hnsw
+    """
+
+    def __init__(
+        self,
+        buckets: list,
+        ef_construction: int,
+        thread_num: int,
+        M: int,
+        offset: int,
+    ):
+        self.offset = offset
+        self.centroids = [bucket[1] for bucket in buckets]
+        data_list = [np.array(bucket[0]) for bucket in buckets]
+        dim = data_list[0].shape[1]
+        self.buckets = []
+        for i in range(len(buckets)):
+            hnsw = HNSW(
+                dim=dim,
+                max_elements=data_list[i].shape[0],
+                ef_construction=ef_construction,
+                thread_num=thread_num,
+                M=M,
+                index="index" + str(i) + ".bin",
+                nth=i,
+            )
+            hnsw.add_items(data_list[i])
+            self.buckets.append(hnsw)
+        self.data_list = [np.array(data) for data in data_list]
+
+    def get_bucket_count(self):
+        return len(self.buckets)
+
+    def get_centroids(self, buckets, with_offset: bool = True):
+        if buckets is None:
+            # return all centroids
+            return self.centroids
+        if with_offset:
+            buckets = [bucket - self.offset for bucket in buckets]
+        return [self.centroids[i] for i in buckets]
+
+    def query(
+        self, vector: np.ndarray, buckets: list, k: int, with_offset: bool = True
+    ):
+        """
+        Query the node
+        :param vector: query vector
+        :param buckets: list of hnsw
+        :param k: number of nearest neighbors to return
+        :return: relative vectors and distances
+        """
+        result_vectors_lst = []
+        result_distances_lst = []
+        if with_offset:
+            buckets = [bucket - self.offset for bucket in buckets]
+        for i in buckets:
+            hnsw = self.buckets[i]
+            if hnsw.index.get_current_count() <= k:
+                labels, distances = hnsw.query(vector, hnsw.index.get_current_count())
+            else:
+                labels, distances = hnsw.query(vector, k)
+
+            # TODO: apply multi vector query
+            labels = labels[0]
+            distances = distances[0]
+            vecs = np.array(self.data_list[i])
+            vectors = vecs[labels].tolist()
+            result_vectors_lst.extend(vectors)
+            result_distances_lst.extend(distances)
+        result_vectors_lst = np.array(result_vectors_lst)
+        result_distances_lst = np.array(result_distances_lst)
+        sorted_index = np.argsort(result_distances_lst, axis=0)
+        result_vectors_lst = result_vectors_lst[sorted_index[:k]]
+        result_distances_lst = result_distances_lst[sorted_index[:k]]
+
+        return result_vectors_lst, result_distances_lst
+
+    def bf_query(self, query: np.ndarray, k: int, return_all: bool = False):
+        """
+        Query all buckets, return top k vectors and distances and bucket index
+        """
+        result_vectors_lst = []
+        result_distances_lst = []
+        bucket_indices = []
+        for i, hnsw in enumerate(self.buckets):
+            currnt_element_count = hnsw.index.get_current_count()
+            actual_k = min(k, currnt_element_count)
+            labels, distances = hnsw.query(query, actual_k)
+            labels = labels[0]
+            distances = distances[0]
+            vecs = np.array(self.data_list[i])
+            vectors = vecs[labels].tolist()
+            result_vectors_lst.extend(vectors)
+            result_distances_lst.extend(distances)
+            bucket_indices.extend([i + self.offset] * actual_k)
+        result_vectors_lst = np.array(result_vectors_lst)
+        result_distances_lst = np.array(result_distances_lst)
+        bucket_indices = np.array(bucket_indices)
+        sort_indices = np.argsort(result_distances_lst, axis=0)
+        top_k_vectors = result_vectors_lst[sort_indices]
+        top_k_distances = result_distances_lst[sort_indices]
+        top_k_bucket_indices = bucket_indices[sort_indices]
+        if not return_all:
+            top_k_vectors = top_k_vectors[:k]
+            top_k_distances = top_k_distances[:k]
+            top_k_bucket_indices = top_k_bucket_indices[:k]
+        return (
+            top_k_vectors.tolist(),
+            top_k_distances.tolist(),
+            top_k_bucket_indices.tolist(),
+        )
+
+    def get_bucket_lens(self):
+        return [hnsw.index.get_current_count() for hnsw in self.buckets]
+
+
+class Cluster:
+
+    def __init__(
+        self,
+        nodes: list,
+        bucket_dict: dict,
+        centroids: np.ndarray,
+        ef_construction: int,
+        thread_num: int,
+        M: int,
+        raw_data: np.ndarray,
+    ):
+        self.nodes = nodes
+        self.bucket_dict = bucket_dict
+        self.centroids = centroids
+        dim = centroids.shape[1]
+        self.hnsw = HNSW(
+            dim=dim,
+            max_elements=centroids.shape[0],  # TODO: need to be modifiable
+            ef_construction=ef_construction,
+            thread_num=thread_num,
+            M=M,
+            index="cluster.bin",
+        )
+        self.hnsw.add_items(centroids)
+        self.raw_data = raw_data
+        self.raw_hnsw = HNSW(
+            dim=raw_data.shape[1],
+            max_elements=raw_data.shape[0],
+            ef_construction=ef_construction,
+            thread_num=thread_num,
+            M=M,
+            index="raw.bin",
+        )
+        self.raw_hnsw.add_items(raw_data)
+
+    def get_nodes_dict(self, query: np.ndarray, top_k: int):
+        """
+        Find the nodes whose buckets' centroids are closest to the query
+        returns: { node1: [bucket_index1, bucket_index2, ...], node2: [bucket_index1, bucket_index2, ...], ... }
+        Index with offset
+        """
+        labels, dists = self.hnsw.query(query, top_k)
+        print("k:", top_k)
+        nodes_dict = {}
+        for label in labels[0].tolist():
+            node = self.bucket_dict[label]
+            if node not in nodes_dict:
+                nodes_dict[node] = []
+            nodes_dict[node].append(label)
+        return nodes_dict
+
+    def get_buckets(self, labels:list):
+        """
+        Get the buckets from labels
+        """
+        return [self.bucket_dict[label] for label in labels]
+
+    def bf_query(self, query: np.ndarray, k: int, return_all: bool = False):
+        """
+        Returns:
+        top k vectors and distances
+        nodes and buckets in each node
+        """
+        node_indices = []
+        dists = []
+        meta_bucket_indices = []
+        vectors = []
+        for i in range(len(self.nodes)):
+            res, dist, bucket_indices = self.nodes[i].bf_query(
+                query, k, return_all=True
+            )
+            node_indices.extend([i] * len(res))
+            vectors.extend(res)
+            dists.extend(dist)
+            meta_bucket_indices.extend(bucket_indices)
+        vectors = np.array(vectors)
+        dists = np.array(dists)
+        node_indices = np.array(node_indices)
+        meta_bucket_indices = np.array(meta_bucket_indices)
+        sort_indices = np.argsort(dists, axis=0)
+        dists = dists[sort_indices]
+        vectors = vectors[sort_indices]
+        node_indices = node_indices[sort_indices]
+        meta_bucket_indices = meta_bucket_indices[sort_indices]
+        if not return_all:
+            vectors = vectors[:k]
+            dists = dists[:k]
+            node_indices = node_indices[:k]
+            meta_bucket_indices = meta_bucket_indices[:k]
+        dists = np.sqrt(dists)
+        return vectors, dists, node_indices, meta_bucket_indices
+
+    def get_total_bucket_count(self):
+        return sum([node.get_bucket_count() for node in self.nodes])
+
+    def get_nodes_count(self):
+        return len(self.nodes)
+
+    def show_nodes_info(self):
+
+        bucket_lens = []
+        for node in self.nodes:
+            bucket_lens.extend(node.get_bucket_lens())
+        print(f"Minimum hnsw element count: {min(bucket_lens)}")
+        print(f"Maximum hnsw element count: {max(bucket_lens)}")
+        print(f"Average hnsw element count: {np.mean(bucket_lens)}")
+        print(
+            "Bucket count of each node: ",
+            [node.get_bucket_count() for node in self.nodes],
+        )
+        print("Total number of elements:")
+        tatal_elements = 0
+        for node in self.nodes:
+            tatal_elements += sum(
+                [hnsw.index.get_current_count() for hnsw in node.buckets]
+            )
+        print(tatal_elements)
+
+    def get_bucket_centroids(self, labels):
+        """
+        Get the centroids of the buckets
+        """
+        return self.centroids[labels]
+
+    def get_all_buckets(self):
+        """
+        Get all buckets
+        """
+        return self.bucket_dict.values()
+
+
+class Bucket2:
     '''
     does NOT store:
         - centroids
@@ -95,14 +351,16 @@ class Bucket:
         bf.add_items(data)
         return cls(hnsw_index=hnsw, bf_index=bf, data=data, absolute_labels=label)
 
-class Node:
-    buckets: List[Bucket]
+class Node2:
+    buckets: List[Bucket2]
+
+
     centroids: np.ndarray                   # duplicate of part of centroids in Cluster
-    bucket_dict: Dict[int, Bucket]
+    bucket_dict: Dict[int, Bucket2]
 
     def __init__(
             self,
-            buckets: List[Bucket],
+            buckets: List[Bucket2],
             bucket_indices: np.ndarray,
             centroids: np.ndarray,
             ):
@@ -113,10 +371,6 @@ class Node:
     @property
     def num_buckets(self):
         return len(self.buckets)
-
-    @property
-    def bucket_num_elements(self):
-        return np.array([bucket.data.shape[0] for bucket in self.buckets])
 
     def _query_labels(
             self,
@@ -137,7 +391,7 @@ class Node:
             result = np.concatenate((result, _labels))
             dist = np.concatenate((dist, _dist))
             bucket_indices = np.concatenate((bucket_indices, np.ones_like(_labels) * _bucket_index))
-        sort_indices = np.argsort(dist)[:k]
+        sort_indices = np.argsort(dist)
         if sqrt:
             return result[sort_indices], bucket_indices, np.sqrt(dist[sort_indices])
         else:
@@ -211,14 +465,14 @@ class Node:
 
 
 
-class Cluster:
+class Cluster2:
     _labels: np.ndarray                 # 0, 1, 2, 3, ..., n        for generating stuff
     data: np.ndarray
     _num_buckets: int
     buckets_labels: np.ndarray          # shape: (data.shape[0],) range: [0, num_buckets)
     bucket_centroids: np.ndarray
     node_labels: np.ndarray             # shape: (num_buckets,) range: [0, num_nodes)
-    nodes: List[Node]
+    nodes: List[Node2]
     top_hnsw_index: HNSW
     top_bf_index: HNSW
     _bucket_labels: np.ndarray          # 0, 1, 2, 3, ..., num_buckets-1
@@ -229,7 +483,7 @@ class Cluster:
             bucket_labels: np.ndarray,
             bucket_centroids: np.ndarray,
             nodes_labels: np.ndarray,
-            nodes: List[Node],
+            nodes: List[Node2],
             top_hnsw_index: HNSW,
             top_bf_index: HNSW,
             ):
@@ -273,7 +527,7 @@ class Cluster:
             # TODO: implement spectral clustering
             raise ValueError(f"Unsupported bucket cluster method: {bucket_cluster_method}")
         # create nodes
-        nodes:List[Node] = []
+        nodes:List[Node2] = []
         for i in tqdm(range(num_nodes)):
             current_node_bucket_indices = np.where(buckets_node_labels == i)[0]
             current_node_bucket_indices_list = current_node_bucket_indices.tolist()
@@ -281,7 +535,7 @@ class Cluster:
             for _bucket_index in current_node_bucket_indices_list:
                 current_bucket_data = data[bucket_labels == _bucket_index]
                 current_bucket_indices = _labels[bucket_labels == _bucket_index]
-                bucket = Bucket.from_data(
+                bucket = Bucket2.from_data(
                     current_bucket_data,
                     current_bucket_indices,
                     bucket_ef_construction,
@@ -290,7 +544,7 @@ class Cluster:
                     )
                 node_buckets.append(bucket)
             _current_node_bucket_centroids = bucket_centroids[current_node_bucket_indices_list]
-            nodes.append(Node(
+            nodes.append(Node2(
                 buckets=node_buckets,
                 bucket_indices=current_node_bucket_indices,
                 centroids=_current_node_bucket_centroids
@@ -380,7 +634,7 @@ class Cluster:
     def num_nodes(self):
         return len(self.nodes)
 
-    def get_node_dict(
+    def get_top_k_buckets(
             self,
             query: np.ndarray,
             k: int,
@@ -389,10 +643,10 @@ class Cluster:
         '''
         returns a dict: {node_index: [bucket_indices: np.ndarray]}
         '''
-        _labels, _ = self.top_hnsw_index.query(query, k)
+        _labels, _ = cluster.top_hnsw_index.query(randomquery, k)
         _labels = _labels[0]
         result = {}
-        bucket_nodes = self.node_labels[_labels]
+        bucket_nodes = cluster.node_labels[_labels]
         _nodes = np.unique(bucket_nodes)
 
         for _node in _nodes:
@@ -407,7 +661,7 @@ class Cluster:
             top_k_buckets: int,
             index_type: Literal["hnsw", "bf"] = "hnsw",
             ):
-        buckets_dict = self.get_node_dict(query, top_k_buckets, index_type=index_type)
+        buckets_dict = self.get_top_k_buckets(query, top_k_buckets, index_type=index_type)
         labels = np.empty((0))
         dists = np.empty((0))
         for _node, _buckets in buckets_dict.items():
@@ -416,51 +670,14 @@ class Cluster:
                 top_k_vectors,
                 _buckets,
                 index_type=index_type,
+                sqrt=False,
                     )
             labels = np.concatenate((labels, _node_labels))
             dists = np.concatenate((dists, _node_dists))
         sort_indices = np.argsort(dists)
-        return labels[sort_indices[:top_k_vectors]], dists[sort_indices[:top_k_vectors]]
-
-    def query_with_node_and_bucket_indices(
-            self,
-            query: np.ndarray,
-            top_k_vectors: int,
-            top_k_buckets: int,
-            index_type: Literal["hnsw", "bf"] = "hnsw",
-            ):
-        buckets_dict = self.get_node_dict(query, top_k_buckets, index_type=index_type)
-        labels = np.empty((0))
-        dists = np.empty((0))
-        for _node, _buckets in buckets_dict.items():
-            _node_labels, _node_dists = self.nodes[_node].query_abs_labels(
-                query,
-                top_k_vectors,
-                _buckets,
-                index_type=index_type,
-                    )
-            labels = np.concatenate((labels, _node_labels))
-            dists = np.concatenate((dists, _node_dists))
-        sort_indices = np.argsort(dists)
+        return labels[sort_indices[top_k_vectors]], dists[sort_indices[top_k_vectors]]
 
 
-    @property
-    def all_buckets(self):
-        result = []
-        for node in self.nodes:
-            result.extend(node.buckets)
-        return result
 
-    def show_nodes_info(self):
-        # TODO:finish
-        bucket_nums_of_nodes = []
-        for node in self.nodes:
-            bucket_nums_of_nodes.append(node.num_buckets)
-        bucket_element_counts = np.empty((0))
-        for node in self.nodes:
-            bucket_element_counts = np.concatenate((bucket_element_counts, node.bucket_num_elements))
-        print(f"Minimum hnsw element count: {min(bucket_nums_of_nodes)}")
-        print(f"Maximum hnsw element count: {max(bucket_nums_of_nodes)}")
-        print(f"Average hnsw element count: {np.mean(bucket_nums_of_nodes)}")
 
 
