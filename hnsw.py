@@ -1,3 +1,4 @@
+from typing import Literal
 import hnswlib
 import numpy as np
 
@@ -12,7 +13,7 @@ class HNSW:
         M: int,
         index: str,
         nth: int = 0,
-        index_type: str = "hnsw",
+        index_type: Literal["hnsw", "bf"] = "hnsw",
     ):
         self.offset = nth * max_elements
         if index_type == "hnsw":

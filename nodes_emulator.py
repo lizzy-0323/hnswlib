@@ -151,7 +151,6 @@ if __name__ == "__main__":
     recall_y = []
     node_recall_y = []
     bucket_recall_y = []
-
     for i in range(90, 92):
         average_recall = 0
         average_bucket_recall = 0
@@ -165,10 +164,8 @@ if __name__ == "__main__":
         recall_y.append(average_recall)
         node_recall_y.append(average_node_recall)
         bucket_recall_y.append(average_bucket_recall)
-
     print(k_x)
     print(recall_y)
-    # plot three curves in one image
     pyplot.xlabel("k")
     pyplot.ylabel("recall")
     pyplot.plot(k_x, recall_y)

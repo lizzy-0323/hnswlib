@@ -1,5 +1,7 @@
+from typing import Literal, Union
 from hnsw import HNSW
 import numpy as np
+from sklearn.cluster import KMeans
 
 
 class Node:
@@ -131,6 +133,7 @@ class Cluster:
         ef_construction: int,
         thread_num: int,
         M: int,
+        raw_data: np.ndarray,
     ):
         self.nodes = nodes
         self.bucket_dict = bucket_dict
@@ -145,6 +148,16 @@ class Cluster:
             index="cluster.bin",
         )
         self.hnsw.add_items(centroids)
+        self.raw_data = raw_data
+        self.raw_hnsw = HNSW(
+            dim=raw_data.shape[1],
+            max_elements=raw_data.shape[0],
+            ef_construction=ef_construction,
+            thread_num=thread_num,
+            M=M,
+            index="raw.bin",
+        )
+        self.raw_hnsw.add_items(raw_data)
 
     def get_nodes_dict(self, query: np.ndarray, top_k: int):
         """
@@ -240,3 +253,40 @@ class Cluster:
         Get all buckets
         """
         return self.bucket_dict.values()
+
+
+EF = 200
+M = 32
+K = 10
+PARTITION_NUM = 10
+THREAD_NUM = 16
+
+class BucketCluster:
+    # TODO: finish
+
+    def __init__(self, data: np.ndarray, num_clusters: int, index_type: Literal["hnsw", "bf"]):
+        self.data = data
+        self.num_clusters = num_clusters
+        kmeans = KMeans(n_clusters=num_clusters, n_init="auto")
+        self.labels = kmeans.fit_predict(data)
+        self.centroids = kmeans.cluster_centers_
+        if index_type == "bf":
+            self.index = HNSW(
+                    dim=data.shape[1],
+                    max_elements=data.shape[0],
+                    ef_construction=EF,
+                    thread_num=THREAD_NUM,
+                    M=M,
+                    index="cluster.bin",
+                    index_type="bf",
+                    )
+
+    def retrieve_data_with_centroids(self, q: np.ndarray, k: int):
+        """
+        Retrieve data with centroids
+        """
+        labels = np.argsort(np.linalg.norm(self.centroids - q, axis=1))[:k]
+        indices = np.where(np.isin(self.labels, labels))[0]
+        return self.data[indices], indices
+
+

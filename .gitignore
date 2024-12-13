@@ -15,3 +15,4 @@ compile_commands.json
 /data
 *.bin
 *.gz
+.ipydraft*.py

@@ -33,3 +33,18 @@ def read_ivecs(fname):
 
 def read_fvecs(fname):
     return read_ivecs(fname).view("float32")
+
+
+def read_bvecs(fname):
+    a = np.fromfile(fname, dtype="uint8")
+    d = a.view("int32")[0]
+    return a.reshape(-1, d + 4)[:, 4:].copy()
+
+
+def read_fbin(fname):
+    shape = np.fromfile(fname, dtype=np.uint32, count=2)
+    if float(shape[0]) * shape[1] * 4 > 2_000_000_000:
+        data = np.memmap(fname, dtype=np.float32, offset=8, mode="r").reshape(shape)
+    else:
+        data = np.fromfile(fname, dtype=np.float32, offset=8).reshape(shape)
+    return data

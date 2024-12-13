@@ -3,7 +3,6 @@ from typing import Literal
 import numpy as np
 from sklearn.cluster import KMeans
 from scipy.sparse.csgraph import laplacian
-from sklearn.utils.fixes import sklearn
 from data_loader import get_dataset
 from utils import Timer
 from node import Node, Cluster
@@ -133,6 +132,8 @@ def partition_buckets_spectral(
 def partition_buckets_kmeans(buckets: list, n_partitions: int, method: Literal["sklearn", "pytorch"] = "sklearn"):
     """
     Partition buckets using kmeans clustering
+    :param buckets: [(bucket1, centroid1), (bucket2, centroid2), ...]
+    :return: partitions: [[(bucket1, centroid1), (bucket2, centroid2), ...], ...]
     """
     centroid_array = np.array([bucket[1] for bucket in buckets])
     kmeans = KMeans(n_clusters=n_partitions, n_init="auto")
@@ -208,7 +209,8 @@ def build_cluster(
             centroids,
             ef_construction=ef_construction,
             thread_num=thread_num,
-            M=M
+            M=M,
+            raw_data=data,
             )
     return cluster
 
