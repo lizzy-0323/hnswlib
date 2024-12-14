@@ -68,7 +68,9 @@ def distributed_search_sim(
     print("Number of buckets for query: ", sum([len(bucket_list) for bucket_list in node_dict.values()]))
     query_res_labels = np.empty((0), dtype=np.int32)
     query_res_dists = np.empty((0), dtype=np.float32)
+    search_bucket_meta_list = []
     for node_index, bucket_list in node_dict.items():
+        search_bucket_meta_list.extend(bucket_list.tolist())
         node_start = time.time()
         _node_labels, _node_dists = cluster.nodes[node_index].query_abs_labels(
                 random_query,
@@ -99,6 +101,13 @@ def distributed_search_sim(
         ground_truth_distances = np.linalg.norm(ground_truth_vectors - random_query, axis=1)
     # print(ground_truth_labels, top_k_labels)
     ground_truth_set = set(ground_truth_labels.tolist())
+    ground_truth_buckets = cluster.buckets_labels[ground_truth_labels].tolist()
+    ground_truth_bucket_set = set(ground_truth_buckets)
+    ground_truth_nodes = cluster.node_labels[ground_truth_buckets].tolist()
+    ground_truth_node_set = set(ground_truth_nodes)
+    query_node_set = set(node_dict.keys())
+    query_bucket_set = set(search_bucket_meta_list)
+
     top_k_set = set(top_k_labels.tolist())
     recall = len(ground_truth_set & top_k_set) / k
     # print(ground_truth_distances)
@@ -111,11 +120,15 @@ def distributed_search_sim(
     print("maximum search time: ", maximum_search_time)
     print("qps: ", k/maximum_search_time)
 
+    bucket_recall = len(ground_truth_bucket_set & query_bucket_set) / len(ground_truth_bucket_set)
+    node_recall = len(ground_truth_node_set & query_node_set) / len(ground_truth_node_set)
+    return recall, bucket_recall, node_recall
+
 
 num_buckets = 200
 buckets_k = 20
 num_nodes = 20
-repeat_num = 1
+repeat_num = 5
 dataset = "sift"
 query_type = "hnsw"             # set to bf to use brute force search, hnsw to use hnsw search
 base, query, ground_truth = get_dataset(dataset)
@@ -131,28 +144,46 @@ k_x = []
 recall_y = []
 node_recall_y = []
 bucket_recall_y = []
+max_recall_y = []
+min_recall_y = []
+
 
 for i in range(90, 96):
     average_recall = 0
     average_bucket_recall = 0
     average_node_recall = 0
+    _min_recall = 1
+    _max_recall = 0
     for j in range(repeat_num):
         print(f"Round {j} under k={i}")
-        distributed_search_sim(cluster, k=i, buckets_k=buckets_k, query=query, ground_truth=ground_truth, index_type=query_type)
+        _recall, _bucket_recall, _node_recall = distributed_search_sim(cluster, k=i, buckets_k=buckets_k, query=query, ground_truth=ground_truth, index_type=query_type)
+        average_recall += _recall / repeat_num
+        average_bucket_recall += _bucket_recall / repeat_num
+        average_node_recall += _node_recall / repeat_num
+        if _recall < _min_recall:
+            _min_recall = _recall
+        if _recall > _max_recall:
+            _max_recall = _recall
     k_x.append(i)
     recall_y.append(average_recall)
     node_recall_y.append(average_node_recall)
     bucket_recall_y.append(average_bucket_recall)
+    max_recall_y.append(_max_recall)
+    min_recall_y.append(_min_recall)
 
-# print(k_x)
-# print(recall_y)
-# pyplot.xlabel("k")
-# pyplot.ylabel("recall")
-# pyplot.plot(k_x, recall_y)
-# pyplot.plot(k_x, node_recall_y)
-# pyplot.plot(k_x, bucket_recall_y)
-# pyplot.legend(["recall", "node recall", "bucket recall"])
-# pyplot.savefig(f"./data/image/{dataset}_recall_vs_k.png")
+print(k_x)
+print(recall_y)
+ymin = min(min(node_recall_y), min(bucket_recall_y), min(min_recall_y))
+pyplot.ylim(1 - (1 - ymin) * 2, 1)      # better visualization
+pyplot.xlabel("k")
+pyplot.ylabel("recall")
+pyplot.plot(k_x, recall_y)
+pyplot.plot(k_x, node_recall_y)
+pyplot.plot(k_x, bucket_recall_y)
+pyplot.plot(k_x, max_recall_y)
+pyplot.plot(k_x, min_recall_y)
+pyplot.legend(["recall", "node recall", "bucket recall", "max recall", "min recall"])
+pyplot.savefig(f"./data/image/{dataset}_recall_vs_k.png")
 
 
 
