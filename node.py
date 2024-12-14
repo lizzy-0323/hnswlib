@@ -408,7 +408,7 @@ class Cluster:
             index_type: Literal["hnsw", "bf"] = "hnsw",
             ):
         buckets_dict = self.get_node_dict(query, top_k_buckets, index_type=index_type)
-        labels = np.empty((0))
+        labels = np.empty((0)).astype(int)
         dists = np.empty((0))
         for _node, _buckets in buckets_dict.items():
             _node_labels, _node_dists = self.nodes[_node].query_abs_labels(

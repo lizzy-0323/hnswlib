@@ -14,6 +14,10 @@ from sklearn.cluster import KMeans
 
 timer = Timer()
 
+# TODO:
+# [ ] calculate node recall rate
+# [ ] calculate bucket recall rate
+# [ ] alter func return values to support better analysis
 
 def create_persistent_kmeans_data(data, num_clusters, num_buckets, path):
     """
@@ -43,6 +47,7 @@ def distributed_search_sim(
     k: int = 10,
     buckets_k: int = 10,
     ground_truth: Union[np.ndarray, None] = None,
+    index_type: Literal["bf", "hnsw"] = "hnsw",
     ):
     """
     For now only supports single vector query
@@ -55,9 +60,10 @@ def distributed_search_sim(
     queryLen = query.shape[0]
     print(base.shape)
     random_index = np.random.randint(0, queryLen)
+    random_query = query[random_index]
     maximum_search_time = 0
     search_times = []
-    node_dict = cluster.get_node_dict(query, buckets_k)
+    node_dict = cluster.get_node_dict(random_query, buckets_k)
     print("Number of nodes for query: ", len(node_dict))
     print("Number of buckets for query: ", sum([len(bucket_list) for bucket_list in node_dict.values()]))
     query_res_labels = np.empty((0), dtype=np.int32)
@@ -65,9 +71,11 @@ def distributed_search_sim(
     for node_index, bucket_list in node_dict.items():
         node_start = time.time()
         _node_labels, _node_dists = cluster.nodes[node_index].query_abs_labels(
-                query,
+                random_query,
                 k,
-                bucket_list,)
+                bucket_list,
+                index_type=index_type
+                )
         _node_labels = _node_labels
         _node_dists = _node_dists
         query_res_labels = np.concatenate((query_res_labels, _node_labels))
@@ -81,32 +89,38 @@ def distributed_search_sim(
     top_k_distances = query_res_dists[sort_indices[:k]]
     if ground_truth is None:
         print("No ground truth provided, using brute force search as ground truth")
-        bf_top_k_labels, bf_top_k_distances = cluster.query(query, k, cluster.num_buckets, index_type="bf")
+        bf_top_k_labels, bf_top_k_distances = cluster.query(random_query, k, cluster.num_buckets, index_type="bf")
         ground_truth_labels = bf_top_k_labels
         ground_truth_distances = bf_top_k_distances
         ground_truth_vectors = base[bf_top_k_labels]
     else:
         ground_truth_labels = ground_truth[random_index][:k]
         ground_truth_vectors = base[ground_truth_labels]
-        ground_truth_distances = np.linalg.norm(ground_truth_vectors - query, axis=1)
-    print(ground_truth_labels, top_k_labels)
+        ground_truth_distances = np.linalg.norm(ground_truth_vectors - random_query, axis=1)
+    # print(ground_truth_labels, top_k_labels)
     ground_truth_set = set(ground_truth_labels.tolist())
     top_k_set = set(top_k_labels.tolist())
     recall = len(ground_truth_set & top_k_set) / k
+    # print(ground_truth_distances)
+    # print(top_k_distances)
     print(
         "recall: ",
         recall,
     )
     print("average search time: ", np.mean(search_times))
     print("maximum search time: ", maximum_search_time)
+    print("qps: ", k/maximum_search_time)
 
 
 num_buckets = 200
+buckets_k = 20
 num_nodes = 20
 repeat_num = 1
 dataset = "sift"
+query_type = "hnsw"             # set to bf to use brute force search, hnsw to use hnsw search
 base, query, ground_truth = get_dataset(dataset)
-data_dict = create_persistent_kmeans_data(base, num_clusters=num_buckets, num_buckets=num_buckets, path=f"./data/pickle/{dataset}_kmeans_data.pkl")
+# data_dict = create_persistent_kmeans_data(base, num_clusters=num_buckets, num_buckets=num_buckets, path=f"./data/pickle/{dataset}_kmeans_data.pkl")
+data_dict = load_presistent_kmeans_data(f"./data/pickle/{dataset}_kmeans_data.pkl")
 cluster = node.Cluster.FromPrePartitionedBuckets(
         data=base,
         bucket_labels=data_dict["labels"],
@@ -118,31 +132,27 @@ recall_y = []
 node_recall_y = []
 bucket_recall_y = []
 
-for i in range(90, 92):
+for i in range(90, 96):
     average_recall = 0
     average_bucket_recall = 0
     average_node_recall = 0
-    rand_query_index = np.random.randint(0, query.shape[0])
-    rand_query = query[rand_query_index]
     for j in range(repeat_num):
         print(f"Round {j} under k={i}")
-        distributed_search_sim(cluster, k=i, buckets_k=10, query=rand_query, ground_truth=ground_truth)
+        distributed_search_sim(cluster, k=i, buckets_k=buckets_k, query=query, ground_truth=ground_truth, index_type=query_type)
     k_x.append(i)
     recall_y.append(average_recall)
     node_recall_y.append(average_node_recall)
     bucket_recall_y.append(average_bucket_recall)
 
-print(k_x)
-print(recall_y)
-pyplot.xlabel("k")
-pyplot.ylabel("recall")
-pyplot.plot(k_x, recall_y)
-pyplot.plot(k_x, node_recall_y)
-pyplot.plot(k_x, bucket_recall_y)
-pyplot.legend(["recall", "node recall", "bucket recall"])
-pyplot.savefig(f"./data/image/{dataset}_recall_vs_k.png")
+# print(k_x)
+# print(recall_y)
+# pyplot.xlabel("k")
+# pyplot.ylabel("recall")
+# pyplot.plot(k_x, recall_y)
+# pyplot.plot(k_x, node_recall_y)
+# pyplot.plot(k_x, bucket_recall_y)
+# pyplot.legend(["recall", "node recall", "bucket recall"])
+# pyplot.savefig(f"./data/image/{dataset}_recall_vs_k.png")
 
 
-rand_query_index = np.random.randint(0, query.shape[0])
-rand_query = query[rand_query_index]
-distributed_search_sim(cluster, k=90, buckets_k=90, query=rand_query, ground_truth=ground_truth)
+
